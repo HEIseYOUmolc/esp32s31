@@ -1,0 +1,42 @@
+# ======================
+# ESP-IDF Build
+# ======================
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.ci.*
+*.bin
+*.elf
+*.map
+
+# ======================
+# Managed Components
+# ======================
+managed_components/
+dependencies.lock
+
+# ======================
+# Python
+# ======================
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+*.egg
+
+# ======================
+# IDE & Editor
+# ======================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ======================
+# Partition table binary
+# ======================
+partition_table/
