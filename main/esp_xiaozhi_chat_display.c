@@ -439,7 +439,10 @@ static display_t *esp_xiaozhi_chat_display_create(esp_lcd_panel_io_handle_t pane
         }
         heap_caps_free(buffer);
     }
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
+    esp_err_t disp_on_err = esp_lcd_panel_disp_on_off(panel, true);
+    if (disp_on_err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_lcd_panel_disp_on_off not supported (ignoring)");
+    }
 
     if (!s_lvgl_inited) {
         lv_init();

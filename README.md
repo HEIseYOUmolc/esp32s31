@@ -106,3 +106,8 @@ ota_1:      app/ota_1      — 6MB     固件槽 B（OTA 升级）
 ## 许可
 
 Apache-2.0 License
+## 参考来源
+
+本项目基于乐鑫官方示例 [esp_xiaozhi xiaozhi_chat](https://components.espressif.com/components/espressif/esp_xiaozhi/versions/0.1.1/examples/xiaozhi_chat?language=zh) 进行适配和二次开发。
+
+
