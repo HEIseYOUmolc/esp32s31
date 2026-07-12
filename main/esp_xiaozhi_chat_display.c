@@ -52,12 +52,14 @@ LV_FONT_DECLARE(font_awesome_30_4);
 LV_FONT_DECLARE(font_puhui_20_4);
 LV_FONT_DECLARE(font_awesome_20_4);
 
+// 集中保存正文、图标和 Emoji 字体，创建 UI 时统一传入。
 typedef struct {
     const lv_font_t *text_font;
     const lv_font_t *icon_font;
     const lv_font_t *emoji_font;
 } display_fonts_t;
 
+// 主题只描述颜色，不持有任何 LVGL 对象。
 typedef struct {
     lv_color_t background;
     lv_color_t text;
@@ -70,11 +72,16 @@ typedef struct {
     lv_color_t low_battery;
 } theme_colors_t;
 
+// 为以后扩展其他显示后端保留类型字段；当前只实现 LCD。
 typedef enum {
     DISPLAY_KIND_NONE,
     DISPLAY_KIND_LCD,
 } display_kind_t;
 
+/*
+ * 显示公共状态：保存分辨率、LVGL 对象句柄和当前 UI 状态。
+ * 所有对象都由 LVGL 任务访问，外部任务更新前必须先取得 lvgl_port 锁。
+ */
 typedef struct display {
     display_kind_t kind;
     int width;
@@ -97,6 +104,7 @@ typedef struct display {
     esp_timer_handle_t notification_timer;
 } display_t;
 
+// LCD 后端在公共状态基础上增加 panel 句柄、页面容器、字体和主题。
 typedef struct {
     display_t base;
     esp_lcd_panel_io_handle_t panel_io;
@@ -116,6 +124,7 @@ static bool s_lvgl_inited;
 static bool s_lvgl_port_inited;
 static display_t *s_display = NULL;
 
+// 服务端情绪名称到图标字体/Unicode Emoji 的映射表。
 static const struct {
     const char *text;
     const char *fa_icon;
@@ -145,6 +154,7 @@ static const struct {
 };
 #define EMOTION_COUNT (sizeof(s_emotion_table) / sizeof(s_emotion_table[0]))
 
+// 构造深色主题，颜色值集中定义，便于保持各控件视觉一致。
 static theme_colors_t esp_xiaozhi_chat_display_dark_theme(void)
 {
     theme_colors_t t = {0};
@@ -160,6 +170,7 @@ static theme_colors_t esp_xiaozhi_chat_display_dark_theme(void)
     return t;
 }
 
+// 构造浅色主题。
 static theme_colors_t esp_xiaozhi_chat_display_light_theme(void)
 {
     theme_colors_t t = {0};
@@ -180,6 +191,7 @@ static inline lcd_display_t *esp_xiaozhi_chat_display_from_base(display_t *disp)
     return (lcd_display_t *)disp;
 }
 
+// 跨任务操作 LVGL 对象前加锁；非 LCD 后端无需使用 LVGL 锁。
 static bool esp_xiaozhi_chat_display_lock(display_t *disp, int timeout_ms)
 {
     if (disp == NULL) {
@@ -202,6 +214,7 @@ static void esp_xiaozhi_chat_display_unlock(display_t *disp)
     }
 }
 
+// 通知定时器回调：隐藏临时通知并恢复常驻状态文字。
 static void esp_xiaozhi_chat_display_notification(void *arg)
 {
     display_t *disp = (display_t *)arg;
@@ -217,6 +230,7 @@ static void esp_xiaozhi_chat_display_notification(void *arg)
     esp_xiaozhi_chat_display_unlock(disp);
 }
 
+// 初始化与具体页面布局无关的状态、通知定时器和电源管理锁。
 static esp_err_t esp_xiaozhi_chat_display_state_init(display_t *disp)
 {
     ESP_RETURN_ON_FALSE(disp, ESP_ERR_INVALID_STATE, TAG, "Display not initialized");
@@ -224,7 +238,7 @@ static esp_err_t esp_xiaozhi_chat_display_state_init(display_t *disp)
     disp->battery_icon = NULL;
     disp->network_icon = NULL;
     disp->muted = false;
-    strlcpy(disp->current_theme_name, "light", sizeof(disp->current_theme_name));
+    strlcpy(disp->current_theme_name, "dark", sizeof(disp->current_theme_name));
 
     esp_timer_create_args_t timer_args = {
         .callback = esp_xiaozhi_chat_display_notification,
@@ -245,6 +259,10 @@ static esp_err_t esp_xiaozhi_chat_display_state_init(display_t *disp)
     return ESP_OK;
 }
 
+/*
+ * 创建页面层级：screen -> container -> status_bar + content。
+ * content 显示表情、预览图和聊天文本，status_bar 显示网络、状态、静音和电池信息。
+ */
 static esp_err_t esp_xiaozhi_chat_display_setup_ui(lcd_display_t *lcd)
 {
     display_t *disp = &lcd->base;
@@ -344,6 +362,10 @@ static esp_err_t esp_xiaozhi_chat_display_setup_ui(lcd_display_t *lcd)
     return ESP_OK;
 }
 
+/*
+ * 按对象依赖关系销毁显示资源。注意 panel/io/display 的所有权必须与创建路径一致，
+ * 如果以后改为复用适配层创建的 display，这里不能再删除底层句柄。
+ */
 static esp_err_t esp_xiaozhi_chat_display_destroy(display_t *disp)
 {
     ESP_RETURN_ON_FALSE(disp, ESP_ERR_INVALID_STATE, TAG, "Display not initialized");
@@ -408,6 +430,10 @@ static esp_err_t esp_xiaozhi_chat_display_destroy(display_t *disp)
     return ESP_OK;
 }
 
+/*
+ * 根据 Board Manager 的 panel 创建 LVGL display 和 UI。
+ * RGB 屏没有独立 panel_io，因此通过 lvgl_port_add_disp_rgb() 注册。
+ */
 static display_t *esp_xiaozhi_chat_display_create(esp_lcd_panel_io_handle_t panel_io,
                                                   esp_lcd_panel_handle_t panel,
                                                   int width, int height,
@@ -426,9 +452,10 @@ static display_t *esp_xiaozhi_chat_display_create(esp_lcd_panel_io_handle_t pane
     lcd->panel_io = panel_io;
     lcd->panel = panel;
     lcd->fonts = fonts;
-    lcd->current_theme = esp_xiaozhi_chat_display_light_theme();
+    lcd->current_theme = esp_xiaozhi_chat_display_dark_theme();
     esp_xiaozhi_chat_display_state_init(&lcd->base);
 
+    // 在 LVGL 接管屏幕前逐行清白，避免上电后的随机 framebuffer 内容短暂可见。
     uint16_t *buffer = (uint16_t *)heap_caps_malloc((size_t)width * sizeof(uint16_t), MALLOC_CAP_8BIT);
     if (buffer != NULL) {
         for (int i = 0; i < width; ++i) {
@@ -444,6 +471,7 @@ static display_t *esp_xiaozhi_chat_display_create(esp_lcd_panel_io_handle_t pane
         ESP_LOGW(TAG, "esp_lcd_panel_disp_on_off not supported (ignoring)");
     }
 
+    // 静态标记保证本显示模块内部只初始化一次 LVGL 和 esp_lvgl_port。
     if (!s_lvgl_inited) {
         lv_init();
         s_lvgl_inited = true;
@@ -456,11 +484,12 @@ static display_t *esp_xiaozhi_chat_display_create(esp_lcd_panel_io_handle_t pane
         s_lvgl_port_inited = true;
     }
 
+    // RGB565 刷新缓冲放在 PSRAM；swap_bytes 必须与面板数据字节序保持一致。
     const lvgl_port_display_cfg_t display_cfg = {
         .io_handle = panel_io,
         .panel_handle = panel,
         .control_handle = NULL,
-        .buffer_size = (uint32_t)(width * 20),
+        .buffer_size = (uint32_t)(width * height),
         .double_buffer = false,
         .trans_size = 0,
         .hres = (uint32_t)width,
@@ -468,7 +497,7 @@ static display_t *esp_xiaozhi_chat_display_create(esp_lcd_panel_io_handle_t pane
         .monochrome = false,
         .rotation = { .swap_xy = swap_xy, .mirror_x = mirror_x, .mirror_y = mirror_y },
         .color_format = LV_COLOR_FORMAT_RGB565,
-        .flags = { .buff_dma = 1, .buff_spiram = 0, .sw_rotate = 0, .swap_bytes = 1, .full_refresh = 0, .direct_mode = 0 },
+        .flags = { .buff_dma = 0, .buff_spiram = 1, .sw_rotate = 0, .swap_bytes = 1, .full_refresh = 0, .direct_mode = 0 },
     };
     if (panel_io != NULL) {
         lcd->base.lv_disp = lvgl_port_add_disp(&display_cfg);
@@ -498,6 +527,7 @@ static esp_err_t esp_xiaozhi_chat_display_required(void)
     return s_display != NULL ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
+// 从 Board Manager 取得 LCD 配置和句柄，并使用实际分辨率、镜像参数创建显示。
 esp_err_t esp_xiaozhi_chat_display_init(void)
 {
     esp_err_t ret = ESP_OK;
@@ -563,6 +593,7 @@ esp_err_t esp_xiaozhi_chat_display_get_height(int *height)
     return ESP_OK;
 }
 
+// 更新常驻状态，并结束当前临时通知的可见状态。
 esp_err_t esp_xiaozhi_chat_display_set_status(const char *status)
 {
     ESP_RETURN_ON_FALSE(status, ESP_ERR_INVALID_ARG, TAG, "Invalid status");
@@ -622,6 +653,7 @@ esp_err_t esp_xiaozhi_chat_display_set_brightness(int brightness)
     return ESP_OK;
 }
 
+// 显示临时通知，定时器到期后由回调恢复状态栏。
 esp_err_t esp_xiaozhi_chat_display_set_notification(const char *notification, int duration_ms)
 {
     ESP_RETURN_ON_FALSE(notification, ESP_ERR_INVALID_ARG, TAG, "Invalid notification");
@@ -645,6 +677,7 @@ esp_err_t esp_xiaozhi_chat_display_set_notification(const char *notification, in
     return ESP_OK;
 }
 
+// 根据名称查找表情；LCD 默认使用 Font Awesome，图片显示时会被主动隐藏。
 esp_err_t esp_xiaozhi_chat_display_set_emotion(const char *emotion)
 {
     ESP_RETURN_ON_FALSE(emotion, ESP_ERR_INVALID_ARG, TAG, "Invalid emotion");
@@ -686,6 +719,7 @@ esp_err_t esp_xiaozhi_chat_display_set_emotion(const char *emotion)
     return ESP_OK;
 }
 
+// 当前简化 UI 只显示最新一条消息，role 保留给后续气泡样式扩展。
 esp_err_t esp_xiaozhi_chat_display_set_chat_message(const char *role, const char *content)
 {
     ESP_RETURN_ON_FALSE(role, ESP_ERR_INVALID_ARG, TAG, "Invalid role");
@@ -741,6 +775,7 @@ esp_err_t esp_xiaozhi_chat_display_set_icon(const char *icon)
     return ESP_OK;
 }
 
+// 图片与表情互斥显示；按屏幕宽度计算缩放比例，NULL 表示恢复表情。
 esp_err_t esp_xiaozhi_chat_display_set_image(const void *image)
 {
     ESP_RETURN_ON_ERROR(esp_xiaozhi_chat_display_required(), TAG, "Display not initialized");
@@ -773,6 +808,7 @@ esp_err_t esp_xiaozhi_chat_display_set_image(const void *image)
     return ESP_OK;
 }
 
+// 切换主题后逐个更新已创建对象，避免只改变 screen 而子容器仍保留旧颜色。
 esp_err_t esp_xiaozhi_chat_display_set_theme(const char *theme_name)
 {
     ESP_RETURN_ON_FALSE(theme_name, ESP_ERR_INVALID_ARG, TAG, "Invalid theme name");

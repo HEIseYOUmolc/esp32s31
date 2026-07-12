@@ -21,26 +21,25 @@ extern "C" {
 #define ESP_XIAOZHI_CHAT_APP_OFFLINE (1 << 2)
 
 /**
- * @brief  ESP IoT Chat App structure
+ * @brief 小智聊天应用运行上下文
  *
- * @note   This structure is used to store the Xiaozhi chat app data
+ * 保存聊天句柄、音频格式、工作线程和事件同步对象。该结构由应用入口创建，
+ * 并在聊天、录音和音频通道线程之间共享。
  */
 typedef struct esp_xiaozhi_chat_app_s {
-    bool                       wakeuped;       /*!< Wake-up state flag */
-    int                        audio_send_errors; /*!< Consecutive transient audio send failures */
-    EventGroupHandle_t         data_evt_group;  /*!< Data event group */
-    esp_xiaozhi_chat_handle_t  chat;           /*!< Xiaozhi chat handle */
-    esp_xiaozhi_chat_audio_t   audio;          /*!< Audio configuration */
-    esp_gmf_oal_thread_t       read_thread;    /*!< Audio data read thread */
-    esp_gmf_oal_thread_t       audio_channel;  /*!< Audio channel thread */
+    bool                       wakeuped;          /*!< 已唤醒且允许上传录音数据 */
+    int                        audio_send_errors;/*!< 连续临时发送失败次数 */
+    EventGroupHandle_t         data_evt_group;   /*!< 控制音频通道开关的事件组 */
+    esp_xiaozhi_chat_handle_t  chat;             /*!< 小智聊天客户端句柄 */
+    esp_xiaozhi_chat_audio_t   audio;            /*!< 上传音频的编码和采样参数 */
+    esp_gmf_oal_thread_t       read_thread;      /*!< 录音读取与上传线程 */
+    esp_gmf_oal_thread_t       audio_channel;    /*!< 音频通道控制线程 */
 } esp_xiaozhi_chat_app_t;
 
 /**
- * @brief  Run the Xiaozhi chat application
+ * @brief 启动小智聊天应用
  *
- * @return
- *       - ESP_OK   On success
- *       - ESP_ERR_NO_MEM   Failed to allocate app context
+ * @return ESP_OK 启动成功；ESP_ERR_NO_MEM 内存分配失败；其他值为对应初始化错误。
  */
 esp_err_t esp_xiaozhi_chat_app(void);
 

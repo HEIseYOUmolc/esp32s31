@@ -39,26 +39,35 @@
 
 static char *TAG = "ESP_XIAOZHI_CHAT_APP";
 
+/*
+ * 本模块是应用编排层，负责把以下子系统串联起来：
+ * 1. 小智聊天协议与 MCP 工具；2. Board Manager 音频设备；
+ * 3. AFE/VAD/唤醒词处理；4. LVGL 状态和消息显示。
+ */
 #define ESP_XIAOZHI_CHAT_APP_AUDIO_READ_ERROR_BACKOFF_MS 20
 #define ESP_XIAOZHI_CHAT_APP_AUDIO_READ_ERROR_LOG_INTERVAL 50
 #define ESP_XIAOZHI_CHAT_APP_AUDIO_READ_MAX_ERRORS 200
 #define ESP_XIAOZHI_CHAT_APP_AUDIO_SEND_MAX_TRANSIENT_ERRORS 8
 
+// MCP 工具使用的设备状态缓存，用于查询和设置音量、屏幕及颜色参数。
 static int current_volume = 50;
 static int current_brightness = 80;
-static char current_theme[32] = "light";
+static char current_theme[32] = "dark";
 static int current_hue = 0;          // 0..360
 static int current_saturation = 0;   // 0..100
 static int current_value = 0;        // 0..100
 static int current_red = 0;          // 0..255
 static int current_green = 0;        // 0..255
 static int current_blue = 0;         // 0..255
+// 相机解释服务按需创建；音频句柄由应用统一持有并在失败路径释放。
 static esp_xiaozhi_camera_handle_t *s_camera_explain = NULL;
 static esp_codec_dev_handle_t s_play_dev = NULL;
 
 static audio_recorder_handle_t s_recorder = NULL;
 static audio_feeder_handle_t   s_feeder   = NULL;
 static audio_play_handle_t     s_playback = NULL;
+
+// 首次使用拍照工具时创建视觉解释客户端，后续调用复用同一实例。
 static esp_err_t init_camera_explain_if_needed(void)
 {
     if (s_camera_explain != NULL) {
@@ -72,6 +81,7 @@ static esp_err_t init_camera_explain_if_needed(void)
     return esp_xiaozhi_camera_create(&camera_config, &s_camera_explain);
 }
 
+// MCP 拍照工具入口：读取服务参数并把 JPEG 图像交给视觉解释服务。
 static esp_mcp_value_t camera_take_photo_callback(const esp_mcp_property_list_t *properties)
 {
     const char *question = esp_mcp_property_list_get_property_string(properties, "question");
@@ -148,6 +158,7 @@ static esp_mcp_value_t camera_take_photo_callback(const esp_mcp_property_list_t 
 // #endif
 }
 
+// 将当前设备状态组装为 MCP 可返回的 JSON 对象。
 static esp_mcp_value_t get_device_status_callback(const esp_mcp_property_list_t* properties)
 {
     ESP_LOGI(TAG, "get_device_status_callback called");
@@ -425,6 +436,7 @@ static esp_mcp_value_t set_rgb_callback(const esp_mcp_property_list_t* propertie
     return esp_mcp_value_create_bool(true);
 }
 
+// 临时网络背压只记录告警；不可恢复错误才更新 UI，避免短暂抖动频繁打断用户。
 static void esp_xiaozhi_chat_app_audio_error(esp_err_t error)
 {
     if (error == ESP_OK) {
@@ -441,6 +453,7 @@ static void esp_xiaozhi_chat_app_audio_error(esp_err_t error)
     esp_xiaozhi_chat_display_set_emotion("sad");
 }
 
+// 处理会话内部事件，将 TTS、文本、表情和错误同步到显示层。
 static void esp_xiaozhi_chat_app_audio_event(esp_xiaozhi_chat_event_t event, void *event_data, void *ctx)
 {
     switch (event) {
@@ -502,23 +515,27 @@ static void esp_xiaozhi_chat_app_audio_event(esp_xiaozhi_chat_event_t event, voi
     }
 }
 
+// 将 av_processor 的播放回调桥接到 Board Manager 提供的 codec 设备。
 static esp_err_t board_audio_write_cb(uint8_t *data, int data_size, void *ctx)
 {
     esp_codec_dev_handle_t play_dev = (esp_codec_dev_handle_t)ctx;
     return esp_codec_dev_write(play_dev, data, data_size) >= 0 ? ESP_OK : ESP_FAIL;
 }
 
+// 将 av_processor 的录音回调桥接到 Board Manager 提供的 codec 设备。
 static esp_err_t board_audio_read_cb(uint8_t *data, int data_size, void *ctx)
 {
     esp_codec_dev_handle_t rec_dev = (esp_codec_dev_handle_t)ctx;
     return esp_codec_dev_read(rec_dev, data, data_size) >= 0 ? ESP_OK : ESP_FAIL;
 }
 
+// 聊天服务下发的音频数据进入 feeder，随后由播放管线解码和输出。
 static void esp_xiaozhi_chat_app_audio_data(const uint8_t *data, int len, void *ctx)
 {
     audio_feeder_feed_data(s_feeder, (uint8_t *)data, len);
 }
 
+// 处理连接和音频通道生命周期事件，并通过事件组通知工作线程。
 static void esp_xiaozhi_chat_app_event(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     esp_xiaozhi_chat_app_t *xiaozhi_chat_app = (esp_xiaozhi_chat_app_t *)arg;
@@ -567,6 +584,10 @@ static void esp_xiaozhi_chat_app_event(void *arg, esp_event_base_t event_base, i
     }
 }
 
+/*
+ * 创建 MCP 工具集合和聊天客户端。聊天客户端取得 MCP engine 所有权后，
+ * 本函数不再单独销毁它；初始化失败时则按创建顺序回收资源。
+ */
 static esp_err_t esp_xiaozhi_chat_app_init(esp_xiaozhi_chat_app_t *xiaozhi_chat_app)
 {
     ESP_RETURN_ON_FALSE(xiaozhi_chat_app != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid app");
@@ -605,7 +626,7 @@ static esp_err_t esp_xiaozhi_chat_app_init(esp_xiaozhi_chat_app_t *xiaozhi_chat_
         esp_mcp_add_tool(mcp, tool);
 
         tool = esp_mcp_tool_create("self.screen.set_theme", "Set screen theme (light/dark)", set_theme_callback);
-        property = esp_mcp_property_create_with_string("theme", "light");
+        property = esp_mcp_property_create_with_string("theme", "dark");
         esp_mcp_tool_add_property(tool, property);
         esp_mcp_add_tool(mcp, tool);
 
@@ -671,6 +692,7 @@ static esp_err_t esp_xiaozhi_chat_app_init(esp_xiaozhi_chat_app_t *xiaozhi_chat_
     return ret;
 }
 
+// AFE 事件回调：唤醒词触发 ONLINE 事件，驱动音频通道线程开始会话。
 static void esp_xiaozhi_chat_app_audio_recorder(audio_recorder_handle_t recorder, void *event, void *ctx)
 {
     esp_gmf_afe_evt_t *afe_evt = (esp_gmf_afe_evt_t *)event;
@@ -700,6 +722,10 @@ static void esp_xiaozhi_chat_app_audio_recorder(audio_recorder_handle_t recorder
     }
 }
 
+/*
+ * 音频通道控制线程：ONLINE 时打开通道并发送唤醒词，OFFLINE 时关闭通道。
+ * 事件组把实时音频回调与可能阻塞的网络操作隔离开。
+ */
 static void esp_xiaozhi_chat_app_audio_channel(void *pv)
 {
     esp_xiaozhi_chat_app_t *xiaozhi_chat_app = (esp_xiaozhi_chat_app_t *)pv;
@@ -742,6 +768,10 @@ static void esp_xiaozhi_chat_app_audio_channel(void *pv)
     }
 }
 
+/*
+ * 录音上传线程：持续从 recorder 取数据，仅在 wakeuped 状态下发送。
+ * 连续读取或发送失败达到阈值时主动关闭通道，避免线程高速空转。
+ */
 static void esp_xiaozhi_chat_app_audio_read(void *pv)
 {
     int ret = 0;
@@ -807,6 +837,10 @@ static void esp_xiaozhi_chat_app_audio_read(void *pv)
     vTaskDelete(NULL);
 }
 
+/*
+ * 初始化完整音频管线：codec -> audio manager -> AFE recorder / feeder / playback。
+ * 各布尔标记记录资源所有权，确保任一步失败都能按逆序清理。
+ */
 static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat_app, esp_board_manager_adapter_info_t bsp_info)
 {
     ESP_RETURN_ON_FALSE(xiaozhi_chat_app != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid app");
@@ -979,6 +1013,10 @@ static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat
     return ret;
 }
 
+/*
+ * 应用总入口。初始化顺序不能随意调整：事件基础设施 -> 板级设备 -> 显示 ->
+ * 聊天协议 -> 音频管线。失败时只释放已经成功创建的资源。
+ */
 esp_err_t esp_xiaozhi_chat_app(void)
 {
     esp_log_level_set("*", ESP_LOG_INFO);
@@ -1017,7 +1055,7 @@ esp_err_t esp_xiaozhi_chat_app(void)
         esp_board_manager_adapter_config_t bsp_config = ESP_BOARD_MANAGER_ADAPTER_CONFIG_DEFAULT();
         bsp_config.enable_lcd = true;
         bsp_config.enable_lcd_backlight = true;
-        bsp_config.enable_lvgl = true;
+        bsp_config.enable_lvgl = false;
         ret = esp_board_manager_adapter_init(&bsp_config, &bsp_info);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to init board manager adapter: %s", esp_err_to_name(ret));

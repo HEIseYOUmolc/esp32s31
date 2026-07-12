@@ -1,4 +1,5 @@
 menu "Xiaozhi Chat Application"
+    # 当服务器同时下发 MQTT 和 WebSocket 参数时，决定客户端优先使用哪一种传输。
     choice XIAOZHI_CHAT_APP_TRANSPORT
         prompt "Preferred transport when both MQTT and WebSocket are supported"
         default XIAOZHI_CHAT_APP_TRANSPORT_AUTO

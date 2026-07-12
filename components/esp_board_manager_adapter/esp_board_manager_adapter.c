@@ -16,9 +16,9 @@
 #include "esp_board_manager_adapter.h"
 #include "esp_lcd_touch.h"
 #include "esp_lcd_types.h"
-#if CONFIG_ESP_BOARD_DEV_LCD_TOUCH_I2C_SUPPORT
-#include "dev_lcd_touch_i2c.h"
-#endif  /* CONFIG_ESP_BOARD_DEV_LCD_TOUCH_I2C_SUPPORT */
+#if CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT
+#include "dev_lcd_touch.h"
+#endif  /* CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT */
 
 // LVGL configuration
 #define LVGL_TICK_PERIOD_MS    5
@@ -121,12 +121,12 @@ static esp_err_t esp_board_manager_adapter_init_lvgl_display(void)
     }
     ESP_LOGI(TAG, "LCD display initialized successfully");
 
-#if CONFIG_ESP_BOARD_DEV_LCD_TOUCH_I2C_SUPPORT
+#if CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT
     if (basic_info.config.enable_touch) {
         void *touch_device_handle = NULL;
         ret = esp_board_manager_get_device_handle("lcd_touch", &touch_device_handle);
         if (ret == ESP_OK && touch_device_handle != NULL) {
-            dev_lcd_touch_i2c_handles_t *touch_handles = (dev_lcd_touch_i2c_handles_t *)touch_device_handle;
+            dev_lcd_touch_handles_t *touch_handles = (dev_lcd_touch_handles_t *)touch_device_handle;
 
             if (touch_handles->touch_handle != NULL) {
                 const lvgl_port_touch_cfg_t touch_cfg = {
@@ -147,7 +147,7 @@ static esp_err_t esp_board_manager_adapter_init_lvgl_display(void)
             ESP_LOGW(TAG, "Touch device not available: %s (continuing without touch)", esp_err_to_name(ret));
         }
     }
-#endif  /* CONFIG_ESP_BOARD_DEV_LCD_TOUCH_I2C_SUPPORT */
+#endif  /* CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT */
 
     return ESP_OK;
 }
