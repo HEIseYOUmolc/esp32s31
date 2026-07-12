@@ -8,7 +8,7 @@
 - **PSRAM**: 16MB Octal PSRAM @200MHz
 - **Flash**: 16MB QIO
 - **音频编解码**: ES8389（支持双麦克风 + 扬声器）
-- **显示屏**: RGB LCD（480×320 或同规格）
+- **显示屏**: 800×480 RGB LCD，RGB565
 - **触摸**: GT1151 电容触摸（I2C）
 - **摄像头**: OV3660（DVP 接口）
 - **WiFi**: 2.4GHz 802.11 b/g/n
@@ -19,6 +19,8 @@
 - **语音唤醒**: 内置 WakeNet（"你好小智"），支持 AFE 前处理（AEC/NS/VAD/AGC）
 - **语音对话**: 通过 MQTT 连接大模型语音服务器（小智协议），支持 OPUS 音频编解码
 - **LVGL 显示**: 显示对话状态、聊天消息、表情动画
+- **显示主题**: 默认 Dark 主题，支持通过 MCP 在 Light/Dark 之间切换
+- **电容触摸**: 板级适配层支持通过 Board Manager 和 `esp_lvgl_port` 将 GT1151 接入 LVGL
 - **摄像头**: DVP 摄像头录制，支持视觉解释功能
 - **音频通路**: 完整录音 → OPUS 编码 → 网络发送 → OPUS 解码 → 播放链路
 
@@ -84,7 +86,7 @@ python -m idf_py update-dependencies
 ## 分区布局
 
 ```
-nvs:        data/nvs       — 64KB    NVS 存储
+nvs:        data/nvs       — 16KB    NVS 存储
 otadata:    data/ota       — 8KB     OTA 信息
 phy_init:   data/phy       — 4KB     射频校准
 model:      data/spiffs    — 1MB     模型/资源分区
@@ -103,11 +105,25 @@ ota_1:      app/ota_1      — 6MB     固件槽 B（OTA 升级）
 - UART ISR 放在 IRAM（防止 ML307 FIFO 溢出）
 - 禁用不必要的 LVGL 控件以减小固件体积
 
+## 显示与触摸适配说明
+
+- LCD 是无独立 `io_handle` 的 RGB 面板，注册 LVGL display 时必须使用 `lvgl_port_add_disp_rgb()`，不能使用 SPI/I80 屏对应的 `lvgl_port_add_disp()`。
+- Xiaozhi 应用设置 `bsp_config.enable_lvgl = false`，由 `esp_xiaozhi_chat_display.c` 唯一负责初始化 LVGL 和注册 RGB display，避免同一 panel 被重复注册后出现裂屏、刷新竞争或颜色异常。
+- 当前显示缓冲为一帧 `800×480` RGB565 数据，分配在 PSRAM，约占 750KB；`swap_bytes` 必须与面板的 RGB565 字节序保持一致。
+- 触摸配置宏使用 `CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT`，运行时句柄类型为 `dev_lcd_touch_handles_t`，公开头文件为 `dev_lcd_touch.h`。只有同时启用适配层的 LVGL 和 `enable_touch` 时，适配层才会调用 `lvgl_port_add_touch()`。
+- 默认主题为 Dark：主背景 `#121212`、聊天区域 `#1E1E1E`、正文白色、用户气泡深绿色、助手气泡深灰色。
+
+## 最近更新（2026-07-12）
+
+- 修复 RGB LCD 使用错误注册接口导致的 `io_handle != NULL` 断言。
+- 修复触摸适配层配置宏和 Board Manager 新版 API 名称不一致的问题。
+- 避免 Board Manager 与 Xiaozhi 显示层重复初始化 LVGL；显示缓冲改为 PSRAM 全屏缓冲。
+- Xiaozhi UI 默认切换为 Dark 主题。
+- 为 `main` 目录的入口、聊天、音频、显示和构建配置补充中文注释。
+
 ## 许可
 
 Apache-2.0 License
 ## 参考来源
 
 本项目基于乐鑫官方示例 [esp_xiaozhi xiaozhi_chat](https://components.espressif.com/components/espressif/esp_xiaozhi/versions/0.1.1/examples/xiaozhi_chat?language=zh) 进行适配和二次开发。
-
-

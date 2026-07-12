@@ -97,6 +97,36 @@ If adding new components, declare them in `main/idf_component.yml` with semantic
 
 ## Changelog
 
+### 2026-07-12 — Xiaozhi RGB display ownership and dark theme
+
+Resolved RGB LCD tearing, framebuffer contention, and inconsistent color behavior in the Xiaozhi UI.
+
+**Root cause**: `esp_board_manager_adapter_init()` and `esp_xiaozhi_chat_display_init()` could both initialize LVGL and register the same RGB panel. Two display refresh paths targeting one panel caused unstable updates. The Xiaozhi display also used a small partial buffer that was poorly suited to the continuously scanned RGB framebuffer.
+
+**Changes:**
+
+- `main/esp_xiaozhi_chat_app.c` sets `bsp_config.enable_lvgl = false`; Board Manager initializes the LCD hardware while the Xiaozhi display module owns LVGL registration.
+- `main/esp_xiaozhi_chat_display.c` uses a full-screen `800×480` RGB565 buffer in PSRAM. `swap_bytes` remains enabled and must match the panel byte order.
+- The initial UI theme is now `dark`, with `current_theme_name` initialized consistently to `"dark"`.
+- Display lifecycle comments document that LVGL display, panel, and panel IO ownership must remain consistent during teardown.
+
+### 2026-07-12 — LVGL touch adapter API fix
+
+Fixed touch input code being excluded at compile time and updated it for the current `esp_board_manager` API.
+
+**Root cause**: The adapter checked the obsolete macro `CONFIG_ESP_BOARD_DEV_LCD_TOUCH_I2C_SUPPORT`, while generated configuration defines `CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT`. After correcting the macro, compilation exposed obsolete header and type names.
+
+**Changes:**
+
+- Replaced `dev_lcd_touch_i2c.h` with `dev_lcd_touch.h`.
+- Replaced `dev_lcd_touch_i2c_handles_t` with `dev_lcd_touch_handles_t`.
+- Registered the Board Manager touch handle with LVGL through `lvgl_port_add_touch()`.
+- Touch initialization is active only when both the Kconfig option and `config.enable_touch` are enabled.
+
+### 2026-07-12 — Chinese source documentation
+
+Added Chinese comments throughout `main/` covering startup order, MCP tools, chat events, codec bridges, AFE/recorder threads, LVGL locking, UI hierarchy, display ownership, public APIs, dependencies, and build configuration. Comments explain control flow and ownership without changing runtime behavior.
+
 
 ### 2026-07-12 — LVGL RGB display crash fix
 
