@@ -28,6 +28,7 @@ extern "C" {
  */
 typedef struct esp_xiaozhi_chat_app_s {
     bool                       wakeuped;          /*!< 已唤醒且允许上传录音数据 */
+    bool                       tts_playing;       /*!< 正在播放服务端语音，暂停上传麦克风数据避免自回声 */
     int                        audio_send_errors;/*!< 连续临时发送失败次数 */
     EventGroupHandle_t         data_evt_group;   /*!< 控制音频通道开关的事件组 */
     esp_xiaozhi_chat_handle_t  chat;             /*!< 小智聊天客户端句柄 */

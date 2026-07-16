@@ -456,14 +456,22 @@ static void esp_xiaozhi_chat_app_audio_error(esp_err_t error)
 // 处理会话内部事件，将 TTS、文本、表情和错误同步到显示层。
 static void esp_xiaozhi_chat_app_audio_event(esp_xiaozhi_chat_event_t event, void *event_data, void *ctx)
 {
+    esp_xiaozhi_chat_app_t *xiaozhi_chat_app = (esp_xiaozhi_chat_app_t *)ctx;
+
     switch (event) {
     case ESP_XIAOZHI_CHAT_EVENT_CHAT_SPEECH_STARTED:
         ESP_LOGI(TAG, "chat start");
+        if (xiaozhi_chat_app != NULL) {
+            xiaozhi_chat_app->tts_playing = true;
+        }
         esp_xiaozhi_chat_display_set_status("Speaking...");
         esp_xiaozhi_chat_display_set_emotion("thinking");
         break;
     case ESP_XIAOZHI_CHAT_EVENT_CHAT_SPEECH_STOPPED:
         ESP_LOGI(TAG, "chat stop");
+        if (xiaozhi_chat_app != NULL) {
+            xiaozhi_chat_app->tts_playing = false;
+        }
         esp_xiaozhi_chat_display_set_status("Ready");
         esp_xiaozhi_chat_display_set_emotion("neutral");
         break;
@@ -471,9 +479,15 @@ static void esp_xiaozhi_chat_app_audio_event(esp_xiaozhi_chat_event_t event, voi
         esp_xiaozhi_chat_tts_state_t *tts = (esp_xiaozhi_chat_tts_state_t *)event_data;
         if (tts) {
             if (tts->state == ESP_XIAOZHI_CHAT_TTS_STATE_START) {
+                if (xiaozhi_chat_app != NULL) {
+                    xiaozhi_chat_app->tts_playing = true;
+                }
                 esp_xiaozhi_chat_display_set_status("Speaking...");
                 esp_xiaozhi_chat_display_set_emotion("thinking");
             } else if (tts->state == ESP_XIAOZHI_CHAT_TTS_STATE_STOP) {
+                if (xiaozhi_chat_app != NULL) {
+                    xiaozhi_chat_app->tts_playing = false;
+                }
                 esp_xiaozhi_chat_display_set_status("Ready");
                 esp_xiaozhi_chat_display_set_emotion("neutral");
             }
@@ -499,6 +513,9 @@ static void esp_xiaozhi_chat_app_audio_event(esp_xiaozhi_chat_event_t event, voi
         esp_xiaozhi_chat_display_set_emotion((char *)event_data);
         break;
     case ESP_XIAOZHI_CHAT_EVENT_CHAT_ERROR: {
+        if (xiaozhi_chat_app != NULL) {
+            xiaozhi_chat_app->tts_playing = false;
+        }
         esp_xiaozhi_chat_error_info_t *info = (esp_xiaozhi_chat_error_info_t *)event_data;
         if (info) {
             ESP_LOGE(TAG, "chat error: %s (source: %s)", esp_err_to_name(info->code), info->source ? info->source : "");
@@ -549,6 +566,7 @@ static void esp_xiaozhi_chat_app_event(void *arg, esp_event_base_t event_base, i
         break;
     case ESP_XIAOZHI_CHAT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "disconnected");
+        xiaozhi_chat_app->tts_playing = false;
         esp_xiaozhi_chat_display_set_status("Disconnected");
         esp_xiaozhi_chat_display_set_notification("Disconnected", 2000);
         esp_xiaozhi_chat_display_set_emotion("sad");
@@ -559,6 +577,7 @@ static void esp_xiaozhi_chat_app_event(void *arg, esp_event_base_t event_base, i
     case ESP_XIAOZHI_CHAT_EVENT_AUDIO_CHANNEL_OPENED:
         ESP_LOGI(TAG, "audio channel opened");
         xiaozhi_chat_app->wakeuped = true;
+        xiaozhi_chat_app->tts_playing = false;
         xiaozhi_chat_app->audio_send_errors = 0;
         esp_xiaozhi_chat_display_set_status("Listening...");
         esp_xiaozhi_chat_display_set_emotion("thinking");
@@ -566,12 +585,14 @@ static void esp_xiaozhi_chat_app_event(void *arg, esp_event_base_t event_base, i
     case ESP_XIAOZHI_CHAT_EVENT_AUDIO_CHANNEL_CLOSED:
         ESP_LOGI(TAG, "audio channel closed");
         xiaozhi_chat_app->wakeuped = false;
+        xiaozhi_chat_app->tts_playing = false;
         xiaozhi_chat_app->audio_send_errors = 0;
         esp_xiaozhi_chat_display_set_status("Ready");
         esp_xiaozhi_chat_display_set_emotion("neutral");
         break;
     case ESP_XIAOZHI_CHAT_EVENT_SERVER_GOODBYE:
         ESP_LOGI(TAG, "server goodbye");
+        xiaozhi_chat_app->tts_playing = false;
         esp_xiaozhi_chat_display_set_status("Goodbye");
         esp_xiaozhi_chat_display_set_notification("Goodbye", 2000);
         esp_xiaozhi_chat_display_set_emotion("neutral");
@@ -659,6 +680,7 @@ static esp_err_t esp_xiaozhi_chat_app_init(esp_xiaozhi_chat_app_t *xiaozhi_chat_
         chat_config.audio_type = ESP_XIAOZHI_CHAT_AUDIO_TYPE_OPUS;
         chat_config.audio_callback = esp_xiaozhi_chat_app_audio_data;
         chat_config.event_callback = esp_xiaozhi_chat_app_audio_event;
+        chat_config.event_callback_ctx = xiaozhi_chat_app;
         chat_config.mcp_engine = mcp;
         chat_config.owns_mcp_engine = true;
         chat_config.has_mqtt_config = info.has_mqtt_config;
@@ -790,7 +812,7 @@ static void esp_xiaozhi_chat_app_audio_read(void *pv)
             consecutive_errors = 0;
         }
 
-        if (ret > 0 && xiaozhi_chat_app->wakeuped && xiaozhi_chat_app->chat != 0) {
+        if (ret > 0 && xiaozhi_chat_app->wakeuped && !xiaozhi_chat_app->tts_playing && xiaozhi_chat_app->chat != 0) {
             esp_err_t send_ret = esp_xiaozhi_chat_send_audio_data(xiaozhi_chat_app->chat, (char *)data, ret);
             if (send_ret == ESP_OK) {
                 xiaozhi_chat_app->audio_send_errors = 0;
@@ -858,6 +880,7 @@ static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat
     bool playback_opened = false;
     bool recorder_opened = false;
     bool feeder_opened = false;
+    bool mixer_opened = false;
     bool read_thread_created = false;
     bool audio_channel_created = false;
 
@@ -867,13 +890,20 @@ static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat
     config.rec_io.read_cb = board_audio_read_cb;
     config.rec_io.read_ctx = bsp_info.rec_dev;
     strcpy(config.mic_layout, bsp_info.mic_layout);
-    audio_manager_config_set_play_io_format(&config, 16000, 16, 1);
+    audio_manager_config_set_play_io_format(&config, xiaozhi_chat_app->audio.sample_rate,
+                                           16, xiaozhi_chat_app->audio.channels);
     audio_manager_config_set_rec_io_format(&config, bsp_info.sample_rate,
                                            bsp_info.sample_bits, bsp_info.channels);
-    esp_codec_dev_sample_info_t fs = {
+    esp_codec_dev_sample_info_t rec_fs = {
         .sample_rate = bsp_info.sample_rate,
         .channel = bsp_info.channels,
         .bits_per_sample = bsp_info.sample_bits,
+    };
+    esp_codec_dev_sample_info_t play_fs = {
+        .sample_rate = xiaozhi_chat_app->audio.sample_rate,
+        .channel = xiaozhi_chat_app->audio.channels,
+        .bits_per_sample = 16,
+        .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
     };
     audio_play_config_t playback_config = DEFAULT_AUDIO_PLAY_CONFIG();
     av_processor_encoder_config_t recorder_cfg = {0};
@@ -900,18 +930,18 @@ static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat
             break;
         }
 
-        if (esp_codec_dev_open((esp_codec_dev_handle_t)bsp_info.play_dev, &fs) != ESP_CODEC_DEV_OK) {
-            ret = ESP_FAIL;
-            ESP_LOGE(TAG, "Failed to open playback codec device");
-            break;
-        }
-        play_dev_opened = true;
-        if (esp_codec_dev_open((esp_codec_dev_handle_t)bsp_info.rec_dev, &fs) != ESP_CODEC_DEV_OK) {
+        if (esp_codec_dev_open((esp_codec_dev_handle_t)bsp_info.rec_dev, &rec_fs) != ESP_CODEC_DEV_OK) {
             ret = ESP_FAIL;
             ESP_LOGE(TAG, "Failed to open record codec device");
             break;
         }
         rec_dev_opened = true;
+        if (esp_codec_dev_open((esp_codec_dev_handle_t)bsp_info.play_dev, &play_fs) != ESP_CODEC_DEV_OK) {
+            ret = ESP_FAIL;
+            ESP_LOGE(TAG, "Failed to open playback codec device");
+            break;
+        }
+        play_dev_opened = true;
 
         ret = audio_playback_open(&playback_config, &s_playback);
         if (ret != ESP_OK) {
@@ -955,6 +985,19 @@ static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat
         }
         feeder_opened = true;
 
+        ret = audio_processor_mixer_open(s_playback, s_feeder);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to open audio mixer: %s", esp_err_to_name(ret));
+            break;
+        }
+        mixer_opened = true;
+
+        ret = audio_processor_ramp_control(AUDIO_MIXER_FOCUS_BALANCED);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set audio mixer focus: %s", esp_err_to_name(ret));
+            break;
+        }
+
         ret = audio_feeder_start(s_feeder);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to run audio feeder: %s", esp_err_to_name(ret));
@@ -989,6 +1032,9 @@ static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat
             esp_gmf_oal_thread_delete(xiaozhi_chat_app->read_thread);
             xiaozhi_chat_app->read_thread = NULL;
         }
+        if (mixer_opened) {
+            audio_processor_mixer_close();
+        }
         if (feeder_opened) {
             audio_feeder_close(s_feeder);
         }
@@ -998,11 +1044,11 @@ static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat
         if (playback_opened) {
             audio_playback_close(s_playback);
         }
-        if (rec_dev_opened) {
-            esp_codec_dev_close((esp_codec_dev_handle_t)bsp_info.rec_dev);
-        }
         if (play_dev_opened) {
             esp_codec_dev_close((esp_codec_dev_handle_t)bsp_info.play_dev);
+        }
+        if (rec_dev_opened) {
+            esp_codec_dev_close((esp_codec_dev_handle_t)bsp_info.rec_dev);
         }
         s_play_dev = NULL;
         if (audio_manager_inited) {
@@ -1049,7 +1095,7 @@ esp_err_t esp_xiaozhi_chat_app(void)
             .format = "opus",
             .sample_rate = 16000,
             .channels = 1,
-            .frame_duration = 60,
+            .frame_duration = 20,
         };
 
         esp_board_manager_adapter_config_t bsp_config = ESP_BOARD_MANAGER_ADAPTER_CONFIG_DEFAULT();
