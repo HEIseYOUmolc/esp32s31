@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_event.h"
+#include "esp_app_desc.h"
 
 #include "audio_processor.h"
 #include "esp_gmf_afe.h"
@@ -32,6 +33,9 @@
 #include "esp_xiaozhi_info.h"
 #include "esp_xiaozhi_chat_app.h"
 #include "esp_xiaozhi_chat_display.h"
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+#include "ai_toy_ws_client.h"
+#endif
 
 // #if CONFIG_ESP_BOARD_DEV_CAMERA_SUPPORT
 // #include "esp_camera.h"
@@ -605,6 +609,122 @@ static void esp_xiaozhi_chat_app_event(void *arg, esp_event_base_t event_base, i
     }
 }
 
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+static void esp_xiaozhi_chat_app_ai_toy_event(ai_toy_ws_event_t event, const void *event_data, void *ctx)
+{
+    esp_xiaozhi_chat_app_t *xiaozhi_chat_app = (esp_xiaozhi_chat_app_t *)ctx;
+
+    switch (event) {
+    case AI_TOY_WS_EVENT_CONNECTED: {
+        ESP_LOGI(TAG, "AI Toy connected");
+        esp_xiaozhi_chat_display_set_status("Connected");
+        esp_xiaozhi_chat_display_set_notification("Connected", 2000);
+        esp_xiaozhi_chat_display_set_emotion("happy");
+
+        ai_toy_ws_device_status_t status = {
+            .electric_charge = 100,
+            .volume = current_volume,
+            .version = esp_app_get_description()->version,
+            .is_update = false,
+            .update_version = "",
+            .start = 1,
+            .dialog_id = NULL,
+        };
+        esp_err_t ret = ai_toy_ws_client_report_status(xiaozhi_chat_app->ai_toy, &status);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to report AI Toy status: %s", esp_err_to_name(ret));
+        }
+        break;
+    }
+    case AI_TOY_WS_EVENT_DISCONNECTED:
+        ESP_LOGI(TAG, "AI Toy disconnected");
+        if (xiaozhi_chat_app != NULL) {
+            xiaozhi_chat_app->wakeuped = false;
+            xiaozhi_chat_app->tts_playing = false;
+            if (xiaozhi_chat_app->data_evt_group != NULL) {
+                xEventGroupSetBits(xiaozhi_chat_app->data_evt_group, ESP_XIAOZHI_CHAT_APP_OFFLINE);
+            }
+        }
+        esp_xiaozhi_chat_display_set_status("Disconnected");
+        esp_xiaozhi_chat_display_set_notification("Disconnected", 2000);
+        esp_xiaozhi_chat_display_set_emotion("sad");
+        break;
+    case AI_TOY_WS_EVENT_ACK: {
+        const ai_toy_ws_ack_t *ack = (const ai_toy_ws_ack_t *)event_data;
+        ESP_LOGI(TAG, "AI Toy ack: code=%d msg=%s", ack ? ack->code : 0, ack && ack->message ? ack->message : "");
+        break;
+    }
+    case AI_TOY_WS_EVENT_OTA: {
+        const ai_toy_ws_ota_t *ota = (const ai_toy_ws_ota_t *)event_data;
+        if (ota != NULL && ota->is_update) {
+            ESP_LOGI(TAG, "AI Toy OTA available: version=%s url=%s",
+                     ota->version ? ota->version : "", ota->url ? ota->url : "");
+            esp_xiaozhi_chat_display_set_notification("OTA Available", 2000);
+        }
+        break;
+    }
+    case AI_TOY_WS_EVENT_SET_VOLUME: {
+        const ai_toy_ws_volume_t *volume = (const ai_toy_ws_volume_t *)event_data;
+        if (volume != NULL) {
+            int mapped_volume = volume->volume * 100 / 16;
+            if (mapped_volume < 0) {
+                mapped_volume = 0;
+            } else if (mapped_volume > 100) {
+                mapped_volume = 100;
+            }
+            current_volume = mapped_volume;
+            if (s_play_dev != NULL && esp_codec_dev_set_out_vol(s_play_dev, current_volume) != ESP_CODEC_DEV_OK) {
+                ESP_LOGW(TAG, "Failed to apply AI Toy volume");
+            }
+        }
+        break;
+    }
+    case AI_TOY_WS_EVENT_PLAY_CONTROL: {
+        const ai_toy_ws_play_control_t *play = (const ai_toy_ws_play_control_t *)event_data;
+        if (play != NULL) {
+            xiaozhi_chat_app->tts_playing = play->start;
+            esp_xiaozhi_chat_display_set_status(play->start ? "Speaking..." : "Ready");
+            esp_xiaozhi_chat_display_set_emotion(play->start ? "thinking" : "neutral");
+        }
+        break;
+    }
+    case AI_TOY_WS_EVENT_PROCESSING:
+        ESP_LOGI(TAG, "AI Toy processing");
+        if (xiaozhi_chat_app != NULL) {
+            xiaozhi_chat_app->wakeuped = false;
+            xiaozhi_chat_app->tts_playing = true;
+        }
+        esp_xiaozhi_chat_display_set_status("Processing...");
+        esp_xiaozhi_chat_display_set_emotion("thinking");
+        break;
+    case AI_TOY_WS_EVENT_UPGRADE_NOW:
+        ESP_LOGI(TAG, "AI Toy upgrade command received");
+        esp_xiaozhi_chat_display_set_notification("Upgrade Requested", 2000);
+        break;
+    case AI_TOY_WS_EVENT_AUDIO_DATA: {
+        const ai_toy_ws_audio_data_t *audio = (const ai_toy_ws_audio_data_t *)event_data;
+        if (audio != NULL && audio->data != NULL && audio->len > 0) {
+            xiaozhi_chat_app->tts_playing = true;
+            audio_feeder_feed_data(s_feeder, (uint8_t *)audio->data, (int)audio->len);
+        }
+        break;
+    }
+    case AI_TOY_WS_EVENT_ERROR: {
+        const ai_toy_ws_error_t *error = (const ai_toy_ws_error_t *)event_data;
+        ESP_LOGE(TAG, "AI Toy error: %s (%s)",
+                 error ? esp_err_to_name(error->code) : "ESP_FAIL",
+                 error && error->message ? error->message : "");
+        esp_xiaozhi_chat_display_set_status("Error");
+        esp_xiaozhi_chat_display_set_notification("Error", 2000);
+        esp_xiaozhi_chat_display_set_emotion("sad");
+        break;
+    }
+    default:
+        break;
+    }
+}
+#endif
+
 /*
  * 创建 MCP 工具集合和聊天客户端。聊天客户端取得 MCP engine 所有权后，
  * 本函数不再单独销毁它；初始化失败时则按创建顺序回收资源。
@@ -613,6 +733,27 @@ static esp_err_t esp_xiaozhi_chat_app_init(esp_xiaozhi_chat_app_t *xiaozhi_chat_
 {
     ESP_RETURN_ON_FALSE(xiaozhi_chat_app != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid app");
 
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+    ai_toy_ws_client_config_t ai_toy_config = {
+        .url = CONFIG_AI_TOY_WS_URL,
+        .device_sn = CONFIG_AI_TOY_DEVICE_SN,
+        .auth_token = CONFIG_AI_TOY_WS_AUTH_TOKEN,
+        .reconnect_timeout_ms = CONFIG_AI_TOY_WS_RECONNECT_MS,
+        .event_cb = esp_xiaozhi_chat_app_ai_toy_event,
+        .event_ctx = xiaozhi_chat_app,
+    };
+
+    esp_err_t ret = ai_toy_ws_client_init(&ai_toy_config, &xiaozhi_chat_app->ai_toy);
+    ESP_RETURN_ON_ERROR(ret, TAG, "Failed to init AI Toy client");
+
+    ret = ai_toy_ws_client_start(xiaozhi_chat_app->ai_toy);
+    if (ret != ESP_OK) {
+        ai_toy_ws_client_deinit(xiaozhi_chat_app->ai_toy);
+        xiaozhi_chat_app->ai_toy = NULL;
+        ESP_RETURN_ON_ERROR(ret, TAG, "Failed to start AI Toy client");
+    }
+    return ESP_OK;
+#else
     esp_err_t ret = ESP_OK;
     esp_xiaozhi_chat_info_t info = {0};
     esp_mcp_t *mcp = NULL;
@@ -712,6 +853,7 @@ static esp_err_t esp_xiaozhi_chat_app_init(esp_xiaozhi_chat_app_t *xiaozhi_chat_
     esp_xiaozhi_chat_free_info(&info);
 
     return ret;
+#endif
 }
 
 // AFE 事件回调：唤醒词触发 ONLINE 事件，驱动音频通道线程开始会话。
@@ -723,9 +865,15 @@ static void esp_xiaozhi_chat_app_audio_recorder(audio_recorder_handle_t recorder
     switch (afe_evt->type) {
     case ESP_GMF_AFE_EVT_WAKEUP_START:
         ESP_LOGI(TAG, "wakeup start");
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+        if (xiaozhi_chat_app->ai_toy != NULL && xiaozhi_chat_app->data_evt_group) {
+            xEventGroupSetBits(xiaozhi_chat_app->data_evt_group, ESP_XIAOZHI_CHAT_APP_ONLINE);
+        }
+#else
         if (xiaozhi_chat_app->chat != 0 && xiaozhi_chat_app->data_evt_group) {
             xEventGroupSetBits(xiaozhi_chat_app->data_evt_group, ESP_XIAOZHI_CHAT_APP_ONLINE);
         }
+#endif
         break;
     case ESP_GMF_AFE_EVT_WAKEUP_END:
         ESP_LOGI(TAG, "wakeup end");
@@ -755,6 +903,27 @@ static void esp_xiaozhi_chat_app_audio_channel(void *pv)
     while (1) {
         EventBits_t bits = xEventGroupWaitBits(xiaozhi_chat_app->data_evt_group, wait_bits, pdTRUE, pdFALSE, portMAX_DELAY);
         if (bits & ESP_XIAOZHI_CHAT_APP_ONLINE) {
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+            if (xiaozhi_chat_app->ai_toy == NULL || !ai_toy_ws_client_is_connected(xiaozhi_chat_app->ai_toy)) {
+                ESP_LOGW(TAG, "Ignore online event before AI Toy client is connected");
+                continue;
+            }
+            ai_toy_ws_audio_config_t audio = {
+                .format = "pcm",
+                .sample_rate = 16000,
+                .sample_bits = 16,
+                .channels = 1,
+            };
+            esp_err_t ret = ai_toy_ws_client_audio_begin(xiaozhi_chat_app->ai_toy, &audio);
+            esp_xiaozhi_chat_app_audio_error(ret);
+            if (ret == ESP_OK) {
+                xiaozhi_chat_app->wakeuped = true;
+                xiaozhi_chat_app->tts_playing = false;
+                xiaozhi_chat_app->audio_send_errors = 0;
+                esp_xiaozhi_chat_display_set_status("Listening...");
+                esp_xiaozhi_chat_display_set_emotion("thinking");
+            }
+#else
             if (xiaozhi_chat_app->chat == 0) {
                 ESP_LOGW(TAG, "Ignore online event before chat is initialized");
                 continue;
@@ -774,9 +943,22 @@ static void esp_xiaozhi_chat_app_audio_channel(void *pv)
             if (ret != ESP_OK && audio_opened) {
                 esp_xiaozhi_chat_app_audio_error(esp_xiaozhi_chat_close_audio_channel(xiaozhi_chat_app->chat));
             }
+#endif
         }
 
         if (bits & ESP_XIAOZHI_CHAT_APP_OFFLINE) {
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+            if (xiaozhi_chat_app->ai_toy == NULL || !ai_toy_ws_client_is_connected(xiaozhi_chat_app->ai_toy)) {
+                xiaozhi_chat_app->wakeuped = false;
+                xiaozhi_chat_app->audio_send_errors = 0;
+                continue;
+            }
+            xiaozhi_chat_app->wakeuped = false;
+            xiaozhi_chat_app->audio_send_errors = 0;
+            esp_xiaozhi_chat_app_audio_error(ai_toy_ws_client_audio_end(xiaozhi_chat_app->ai_toy));
+            esp_xiaozhi_chat_display_set_status("Ready");
+            esp_xiaozhi_chat_display_set_emotion("neutral");
+#else
             if (xiaozhi_chat_app->chat == 0) {
                 ESP_LOGW(TAG, "Ignore offline event before chat is initialized");
                 continue;
@@ -784,6 +966,7 @@ static void esp_xiaozhi_chat_app_audio_channel(void *pv)
             xiaozhi_chat_app->wakeuped = false;
             xiaozhi_chat_app->audio_send_errors = 0;
             esp_xiaozhi_chat_app_audio_error(esp_xiaozhi_chat_close_audio_channel(xiaozhi_chat_app->chat));
+#endif
         }
 
         xEventGroupClearBits(xiaozhi_chat_app->data_evt_group, wait_bits);
@@ -812,8 +995,18 @@ static void esp_xiaozhi_chat_app_audio_read(void *pv)
             consecutive_errors = 0;
         }
 
-        if (ret > 0 && xiaozhi_chat_app->wakeuped && !xiaozhi_chat_app->tts_playing && xiaozhi_chat_app->chat != 0) {
+        if (ret > 0 && xiaozhi_chat_app->wakeuped && !xiaozhi_chat_app->tts_playing
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+                && xiaozhi_chat_app->ai_toy != NULL
+#else
+                && xiaozhi_chat_app->chat != 0
+#endif
+           ) {
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+            esp_err_t send_ret = ai_toy_ws_client_audio_send(xiaozhi_chat_app->ai_toy, data, (size_t)ret);
+#else
             esp_err_t send_ret = esp_xiaozhi_chat_send_audio_data(xiaozhi_chat_app->chat, (char *)data, ret);
+#endif
             if (send_ret == ESP_OK) {
                 xiaozhi_chat_app->audio_send_errors = 0;
             } else {
@@ -950,13 +1143,22 @@ static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat
         }
         playback_opened = true;
 
-        recorder_cfg.format = AV_PROCESSOR_FORMAT_ID_OPUS;
+        recorder_cfg.format =
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+            AV_PROCESSOR_FORMAT_ID_PCM;
+        recorder_cfg.params.pcm.audio_info.sample_rate = xiaozhi_chat_app->audio.sample_rate;
+        recorder_cfg.params.pcm.audio_info.sample_bits = 16;
+        recorder_cfg.params.pcm.audio_info.channels = xiaozhi_chat_app->audio.channels;
+        recorder_cfg.params.pcm.audio_info.frame_duration = xiaozhi_chat_app->audio.frame_duration;
+#else
+            AV_PROCESSOR_FORMAT_ID_OPUS;
         recorder_cfg.params.opus.audio_info.sample_rate = xiaozhi_chat_app->audio.sample_rate;
         recorder_cfg.params.opus.audio_info.sample_bits = 16;
         recorder_cfg.params.opus.audio_info.channels = xiaozhi_chat_app->audio.channels;
         recorder_cfg.params.opus.audio_info.frame_duration = xiaozhi_chat_app->audio.frame_duration;
         recorder_cfg.params.opus.enable_vbr = false;
         recorder_cfg.params.opus.bitrate = 24000;
+#endif
 
         recorder_config.encoder_cfg = recorder_cfg;
         recorder_config.afe_config = afe_config;
@@ -970,11 +1172,20 @@ static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat
         }
         recorder_opened = true;
 
-        feeder_cfg.format = AV_PROCESSOR_FORMAT_ID_OPUS;
+        feeder_cfg.format =
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+            AV_PROCESSOR_FORMAT_ID_PCM;
+        feeder_cfg.params.pcm.audio_info.sample_rate = xiaozhi_chat_app->audio.sample_rate;
+        feeder_cfg.params.pcm.audio_info.sample_bits = 16;
+        feeder_cfg.params.pcm.audio_info.channels = xiaozhi_chat_app->audio.channels;
+        feeder_cfg.params.pcm.audio_info.frame_duration = xiaozhi_chat_app->audio.frame_duration;
+#else
+            AV_PROCESSOR_FORMAT_ID_OPUS;
         feeder_cfg.params.opus.audio_info.sample_rate = xiaozhi_chat_app->audio.sample_rate;
         feeder_cfg.params.opus.audio_info.sample_bits = 16;
         feeder_cfg.params.opus.audio_info.channels = xiaozhi_chat_app->audio.channels;
         feeder_cfg.params.opus.audio_info.frame_duration = xiaozhi_chat_app->audio.frame_duration;
+#endif
 
         feeder_config.feeder_task_config.task_core = 1;
         feeder_config.decoder_cfg = feeder_cfg;
@@ -1024,6 +1235,12 @@ static esp_err_t esp_xiaozhi_chat_app_audio(esp_xiaozhi_chat_app_t *xiaozhi_chat
     } while (0);
 
     if (ret != ESP_OK) {
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+        if (xiaozhi_chat_app->ai_toy != NULL) {
+            ai_toy_ws_client_deinit(xiaozhi_chat_app->ai_toy);
+            xiaozhi_chat_app->ai_toy = NULL;
+        }
+#endif
         if (audio_channel_created) {
             esp_gmf_oal_thread_delete(xiaozhi_chat_app->audio_channel);
             xiaozhi_chat_app->audio_channel = NULL;
@@ -1092,7 +1309,11 @@ esp_err_t esp_xiaozhi_chat_app(void)
         event_registered = true;
 
         xiaozhi_chat_app->audio = (esp_xiaozhi_chat_audio_t) {
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+            .format = "pcm",
+#else
             .format = "opus",
+#endif
             .sample_rate = 16000,
             .channels = 1,
             .frame_duration = 20,
@@ -1136,6 +1357,12 @@ esp_err_t esp_xiaozhi_chat_app(void)
         esp_xiaozhi_chat_deinit(xiaozhi_chat_app->chat);
         xiaozhi_chat_app->chat = 0;
     }
+#if CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY
+    if (xiaozhi_chat_app->ai_toy != NULL) {
+        ai_toy_ws_client_deinit(xiaozhi_chat_app->ai_toy);
+        xiaozhi_chat_app->ai_toy = NULL;
+    }
+#endif
     if (event_registered) {
         esp_event_handler_unregister(ESP_XIAOZHI_CHAT_EVENTS, ESP_EVENT_ANY_ID, esp_xiaozhi_chat_app_event);
     }

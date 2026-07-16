@@ -1,0 +1,16 @@
+if(CONFIG_XIAOZHI_CHAT_APP_SERVER_AI_TOY)
+    idf_component_register(
+        SRCS
+            "ai_toy_ws_client.c"
+            "ai_toy_ws_protocol.c"
+        INCLUDE_DIRS
+            "include"
+        PRIV_INCLUDE_DIRS
+            "priv_include"
+        REQUIRES
+            esp_websocket_client
+            cjson
+    )
+else()
+    idf_component_register()
+endif()

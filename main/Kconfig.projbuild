@@ -1,8 +1,53 @@
 menu "Xiaozhi Chat Application"
+    choice XIAOZHI_CHAT_APP_SERVER_BACKEND
+        prompt "Chat server backend"
+        default XIAOZHI_CHAT_APP_SERVER_XIAOZHI
+        help
+            Select the server protocol used by this firmware.
+
+        config XIAOZHI_CHAT_APP_SERVER_XIAOZHI
+            bool "Xiaozhi server"
+        config XIAOZHI_CHAT_APP_SERVER_AI_TOY
+            bool "AI Toy WebSocket server"
+    endchoice
+
+    menu "AI Toy WebSocket Server"
+        depends on XIAOZHI_CHAT_APP_SERVER_AI_TOY
+
+        config AI_TOY_WS_URL
+            string "WebSocket URL"
+            default "wss://www.haussentech.com/aiToy/ws/deviceData"
+            help
+                WebSocket endpoint for the AI toy platform protocol.
+
+        config AI_TOY_DEVICE_SN
+            string "Device serial number"
+            default ""
+            help
+                Device identifier sent as deviceSn. If empty, the server may reject status and audio messages.
+
+        config AI_TOY_WS_AUTH_TOKEN
+            string "Authorization token"
+            default ""
+            help
+                Optional token added as an Authorization header. Leave empty if the server does not require it.
+
+        config AI_TOY_WS_RECONNECT_MS
+            int "Reconnect interval (ms)"
+            range 1000 60000
+            default 5000
+
+        config AI_TOY_WS_MAX_TEXT_PAYLOAD
+            int "Maximum text payload size"
+            range 512 16384
+            default 4096
+    endmenu
+
     # 当服务器同时下发 MQTT 和 WebSocket 参数时，决定客户端优先使用哪一种传输。
     choice XIAOZHI_CHAT_APP_TRANSPORT
         prompt "Preferred transport when both MQTT and WebSocket are supported"
         default XIAOZHI_CHAT_APP_TRANSPORT_AUTO
+        depends on XIAOZHI_CHAT_APP_SERVER_XIAOZHI
         help
             When the server provides both MQTT and WebSocket, this option selects which to use.
             If "Auto (prefer MQTT)" is selected, MQTT is used when both are available.
