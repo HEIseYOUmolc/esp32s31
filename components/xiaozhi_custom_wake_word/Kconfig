@@ -1,0 +1,47 @@
+menu "Xiaozhi Custom Wake Word"
+
+    config XIAOZHI_CUSTOM_WAKE_WORD_ENABLE
+        bool "Enable custom wake word"
+        default y
+        help
+            Use ESP-SR MultiNet voice command detection as a configurable wake word path.
+
+    config XIAOZHI_CUSTOM_WAKE_WORD_COMMAND
+        string "Wake word command"
+        depends on XIAOZHI_CUSTOM_WAKE_WORD_ENABLE
+        default "ni hao xiao zhi"
+        help
+            Pinyin command text used by MultiNet, separated by spaces.
+
+    config XIAOZHI_CUSTOM_WAKE_WORD_DISPLAY
+        string "Wake word display text"
+        depends on XIAOZHI_CUSTOM_WAKE_WORD_ENABLE
+        default "你好小智"
+        help
+            Text sent to the Xiaozhi server when the wake word is detected.
+
+    config XIAOZHI_CUSTOM_WAKE_WORD_COMMAND_ID
+        int "Wake word command id"
+        depends on XIAOZHI_CUSTOM_WAKE_WORD_ENABLE
+        range 0 399
+        default 199
+        help
+            MultiNet command id reserved for the custom wake word.
+
+    config XIAOZHI_CUSTOM_WAKE_WORD_MIN_PROB_PERCENT
+        int "Minimum recognition probability percent"
+        depends on XIAOZHI_CUSTOM_WAKE_WORD_ENABLE
+        range 0 100
+        default 0
+        help
+            Ignore detections below this probability. Use 0 to accept MultiNet's own threshold.
+
+    config XIAOZHI_CUSTOM_WAKE_WORD_VCMD_TIMEOUT_MS
+        int "Voice command detection timeout (ms)"
+        depends on XIAOZHI_CUSTOM_WAKE_WORD_ENABLE
+        range 1000 30000
+        default 5000
+        help
+            MultiNet detection window. The app restarts detection after timeout.
+
+endmenu
